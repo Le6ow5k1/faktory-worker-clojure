@@ -7,5 +7,4 @@
                  [org.clojure/core.async "0.3.443"]
                  [cheshire "5.8.0"]
                  [crypto-random "1.2.0"]]
-
   )

@@ -10,6 +10,7 @@
            [java.net Socket URI]))
 
 (def default-uri "tcp://localhost:7419")
+(def default-timeout-ms 500)
 
 (defn create-socket
   [given-uri]
@@ -18,7 +19,7 @@
         port (.getPort uri)]
     (Socket. host port)))
 
-(defn- worker-info
+(defn worker-info
   []
   {
    :wid (random/hex 8)
@@ -32,16 +33,45 @@
    }
   )
 
+(defmacro with-timeout
+  [& body]
+  `(let [future# (future ~@body)
+         result# (deref future# ~default-timeout-ms :timeout)]
+     (if (= result# :timeout)
+       (throw (java.net.SocketTimeoutException.))
+       result#)))
+
 (defn read
   [{:keys [reader]}]
-  (.readLine reader))
+  (with-timeout (.readLine reader)))
 
 (defn write
   [{:keys [writer]} message]
-  (do
-    (print message)
-    (.append writer message)
-    (.flush writer)))
+  (with-timeout
+    (do
+      (print message)
+      (.append writer message)
+      (.flush writer))))
+
+(defn command-error
+  [message]
+  (Exception. (str "Command error: " message)))
+
+(defn read-and-parse
+  [{:keys [reader] :as client}]
+  (let [[signal-char & response] (read client)
+        response-str (->> response
+                          (apply str)
+                          str/trim-newline)]
+    (case signal-char
+      \+ response-str
+      \- (throw (command-error response-str))
+      \$ (let [read-count (Integer/parseInt response-str)]
+           (let [output (byte-array read-count)]
+             (with-timeout
+               (.read reader output 0 read-count)
+               (String. output))))
+      (throw (Exception. (str "Parse error: " signal-char response-str))))))
 
 (defn send-command
   [client verb data]
@@ -51,24 +81,49 @@
 (defn beat
   [{:keys [wid] :as client}]
   (send-command client "BEAT" {:wid wid})
-  (read client))
+  (let [response (read-and-parse client)]
+    (prn response)
+    (if (= response "OK")
+      response
+      (get (json/parse-string response) "state"))))
 
-(defn create-client
+(defn push
+  [client job]
+  (send-command client "PUSH" job)
+  (let [response (read-and-parse client)]
+    (if (= response "OK")
+      (get job :jid)
+      (throw (command-error response))
+      )))
+
+(defn fetch
+  [client & queues]
+  (send-command client "FETCH" queues)
+  (let [response (read-and-parse client)]
+      (json/parse-string response)))
+
+(defn open
+  [{:keys [writer reader] :as client} info]
+  (print (read client))
+  (send-command client "HELLO" info)
+  (let [response (read-and-parse client)]
+    (if (= response "OK")
+      response
+      (throw (command-error response)))))
+
+(defn close
+  [{:keys [writer reader socket] :as client}]
+  (send-command client "END")
+  (.close writer)
+  (.close reader)
+  (.close socket))
+
+(defn create
   [uri]
   (let [socket (create-socket uri)
         writer (io/writer socket)
         reader (io/reader socket)
         info (worker-info)
-        client {:writer writer :reader reader :wid (info :wid)}]
-    (print (read client))
-    (send-command client "HELLO" info)
-    (print (read client))
+        client {:writer writer :reader reader :socket socket :wid (info :wid)}]
+    (open client info)
     client))
-
-(def client (create-client default-uri))
-
-(beat client)
-
-(read client)
-
-(send-command client "INFO" {})
