@@ -82,7 +82,6 @@
   [{:keys [wid] :as client}]
   (send-command client "BEAT" {:wid wid})
   (let [response (read-and-parse client)]
-    (prn response)
     (if (= response "OK")
       response
       (get (json/parse-string response) "state"))))
@@ -93,8 +92,7 @@
   (let [response (read-and-parse client)]
     (if (= response "OK")
       (get job :jid)
-      (throw (command-error response))
-      )))
+      (throw (command-error response)))))
 
 (defn fetch
   [client & queues]
@@ -102,9 +100,36 @@
   (let [response (read-and-parse client)]
       (json/parse-string response)))
 
+(defn flush
+  [client]
+  (send-command client "FLUSH")
+  (let [response (read-and-parse client)]
+    (if (= response "OK")
+      response
+      (throw (command-error response)))))
+
+(defn ack
+  [client jid]
+  (send-command client "ACK" {:jid jid})
+  (let [response (read-and-parse client)]
+    (if (= response "OK")
+      response
+      (throw (command-error response)))))
+
+(defn fail
+  [client jid e]
+  (send-command client "FAIL" {:message (.getMessage e)
+                               :errtype (.toString e)
+                               :jid jid
+                               :backtrace (str/join "\n" (.getStackTrace e))})
+  (let [response (read-and-parse client)]
+    (if (= response "OK")
+      response
+      (throw (command-error response)))))
+
 (defn open
   [{:keys [writer reader] :as client} info]
-  (print (read client))
+  (read client)
   (send-command client "HELLO" info)
   (let [response (read-and-parse client)]
     (if (= response "OK")

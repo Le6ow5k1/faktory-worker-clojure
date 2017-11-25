@@ -36,6 +36,11 @@
            #"Command error: Error message"
            (c/read-and-parse {:reader reader})))))
 
+  (testing "Bulk string response"
+    (let [reader (make-reader-stub {:read-line-resp "$6\r\n"
+                                    :read-resp "foobar\r\n"})]
+      (is (= (c/read-and-parse {:reader reader}) "foobar"))))
+
   (testing "Unexpected response"
     (let [reader (make-reader-stub {:read-line-resp "Foobar"})]
       (is (thrown-with-msg?
