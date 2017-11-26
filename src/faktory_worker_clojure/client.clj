@@ -74,9 +74,11 @@
       (throw (Exception. (str "Parse error: " signal-char response-str))))))
 
 (defn send-command
-  [client verb data]
-  (let [data-str (json/generate-string data)]
-    (write client (str verb " " data-str "\r\n"))))
+  [client verb & data]
+  (if-let [data (first data)]
+    (let [data-str (json/generate-string data)]
+      (write client (str verb " " data-str "\r\n")))
+    (write client (str verb "\r\n"))))
 
 (defn beat
   [{:keys [wid] :as client}]
