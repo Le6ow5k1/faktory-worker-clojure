@@ -1,13 +1,14 @@
 (ns faktory-worker-clojure.core
   (:require [faktory-worker-clojure.client :as client]
             [clojure.core.async :as async]
-            )
+
+            [crypto.random :as random])
   (:import java.util.concurrent.Executors)
   )
 
 (def heartbeat-period-ms 15000)
 (def default-pool-size 25)
-(def default-queues [:default])
+(def defaul-queue :default)
 (def job-fns (atom {}))
 
 (defn try-beat
@@ -57,7 +58,7 @@
 
 (defn fetch-and-process
   [client]
-  (when-let [job (client/fetch default-queues)]
+  (when-let [job (client/fetch [default-queue])]
     (process-job client job)
     )
   )
@@ -94,6 +95,21 @@
            )
          )
        )
+     )
+   )
+  )
+
+(defn perform-async
+  ([client fn args]
+   (perform-async fn args {}))
+  ([client fn args {:keys [queue] :as opts}]
+   (let [jobtype (-> fn class str)
+         job {:jid (random/hex 12)
+              :queue (or queue default-queue)
+              :args args
+              :jobtype jobtype}]
+     (swap! job-fns assoc :jobtype fn)
+     (client/push client job)
      )
    )
   )
