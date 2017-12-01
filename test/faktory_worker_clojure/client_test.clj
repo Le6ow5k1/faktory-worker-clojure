@@ -41,6 +41,10 @@
                                     :read-resp "foobar\r\n"})]
       (is (= (c/read-and-parse {:reader reader}) "foobar"))))
 
+  (testing "Zero bytes bulk string response"
+    (let [reader (make-reader-stub {:read-line-resp "$0\r\n"})]
+      (is (= (c/read-and-parse {:reader reader}) nil))))
+
   (testing "Unexpected response"
     (let [reader (make-reader-stub {:read-line-resp "Foobar"})]
       (is (thrown-with-msg?
@@ -52,7 +56,7 @@
 (deftest beat-test
   (testing "Successful response"
     (let [writer (make-writer-stub "BEAT {\"wid\":null}\r\n")
-          reader (make-reader-stub {:read-line-resp"+OK\r\n"})
+          reader (make-reader-stub {:read-line-resp "+OK\r\n"})
           ]
       (is (= (c/beat {:writer writer :reader reader}) "OK"))))
 
@@ -61,4 +65,17 @@
           reader (make-reader-stub {:read-line-resp "$18\r\n"
                                     :read-resp "{\"state\":\"quiet\"}\r\n"})]
       (is (= (c/beat {:writer writer :reader reader}) "quiet"))))
+  )
+
+(deftest fetch-test
+  (testing "There is no job"
+    (let [writer (make-writer-stub "FETCH [\"queue\"]\r\n")
+          reader (make-reader-stub {:read-line-resp "$0\r\n"})]
+      (is (= (c/fetch {:writer writer :reader reader} :queue) nil))))
+
+  (testing "There is a job"
+    (let [writer (make-writer-stub "FETCH [\"queue\"]\r\n")
+          reader (make-reader-stub {:read-line-resp "$36\r\n"
+                                    :read-resp "{\"jid\":1,\"jobtype\":\"foo\",\"args\":[1]}\r\n"})]
+      (is (= (c/fetch {:writer writer :reader reader} :queue) {:jid 1 :jobtype "foo" :args [1]}))))
   )

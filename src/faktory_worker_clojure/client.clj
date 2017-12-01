@@ -10,7 +10,7 @@
            [java.net Socket URI]))
 
 (def default-uri "tcp://localhost:7419")
-(def default-timeout-ms 500)
+(def default-timeout-ms 2500)
 
 (defn create-socket
   [given-uri]
@@ -67,10 +67,11 @@
       \+ response-str
       \- (throw (command-error response-str))
       \$ (let [read-count (Integer/parseInt response-str)]
-           (let [output (byte-array read-count)]
-             (with-timeout
-               (.read reader output 0 read-count)
-               (String. output))))
+           (when (> read-count 0)
+             (let [output (byte-array read-count)]
+               (with-timeout
+                 (.read reader output 0 read-count)
+                 (String. output)))))
       (throw (Exception. (str "Parse error: " signal-char response-str))))))
 
 (defn send-command
@@ -100,7 +101,7 @@
   [client & queues]
   (send-command client "FETCH" queues)
   (let [response (read-and-parse client)]
-      (json/parse-string response)))
+      (json/parse-string response true)))
 
 (defn flush
   [client]
