@@ -68,18 +68,21 @@
       \- (throw (command-error response-str))
       \$ (let [read-count (Integer/parseInt response-str)]
            (when (> read-count 0)
-             (let [output (byte-array read-count)]
+             (let [output (char-array read-count)]
                (with-timeout
                  (.read reader output 0 read-count)
+                 ;; Read the remaining newline
+                 (.readLine reader)
                  (String. output)))))
       (throw (Exception. (str "Parse error: " signal-char response-str))))))
 
 (defn send-command
-  [client verb & data]
-  (if-let [data (first data)]
-    (let [data-str (json/generate-string data)]
-      (write client (str verb " " data-str "\r\n")))
-    (write client (str verb "\r\n"))))
+  ([client verb]
+   (write client (str verb "\r\n")))
+  ([client verb data]
+   (cond
+     (map? data) (write client (str verb " " (json/generate-string data) "\r\n"))
+     (sequential? data) (write client (str verb " " (str/join " " (map name data)) "\r\n")))))
 
 (defn beat
   [{:keys [wid] :as client}]
@@ -122,9 +125,9 @@
 (defn fail
   [client jid e]
   (send-command client "FAIL" {:message (.getMessage e)
-                               :errtype (.toString e)
+                               :errtype (str (class e))
                                :jid jid
-                               :backtrace (str/join "\n" (.getStackTrace e))})
+                               :backtrace (map #(.toString %) (.getStackTrace e))})
   (let [response (read-and-parse client)]
     (if (= response "OK")
       response
