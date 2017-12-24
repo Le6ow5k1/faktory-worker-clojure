@@ -17,7 +17,8 @@
   (let [uri (new URI given-uri)
         host (.getHost uri)
         port (.getPort uri)]
-    (Socket. host port)))
+    (doto (Socket. host port)
+      (.setSoTimeout default-timeout-ms))))
 
 (defn worker-info
   []

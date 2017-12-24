@@ -1,22 +1,25 @@
 (ns faktory-worker-clojure.core
   (:require [faktory-worker-clojure.client :as client]
+            [faktory-worker-clojure.connection-pool :as connections]
             [clojure.core.async :as async]
-
-            [crypto.random :as random])
-  (:import java.util.concurrent.Executors)
+            [crypto.random :as random]
+            [taoensso.timbre :as timbre]
+            )
+  (:import [java.util.concurrent Executors TimeUnit])
   )
 
 (def heartbeat-period-ms 15000)
-(def default-pool-size 25)
-(def defaul-queue :default)
+(def default-pool-size 2)
+(def default-queue :default)
 (def job-fns (atom {}))
 
 (defn try-beat
-  [client]
+  [conn-pool]
   (try
-    (client/beat client)
-    (catch Exception e
-      (print (.getMessage e)))))
+    (connections/with-conn conn-pool
+      #(client/beat %))
+    (catch Throwable e
+      (timbre/error e "Error during heartbeat"))))
 
 (defn start-heartbeat
   [client]
@@ -31,102 +34,98 @@
               (recur))))))
     c))
 
-(defn create-worker-pool
-  [size]
-  (Executors/newFixedThreadPool size))
+(defn try-fetch
+  [conn-pool queue]
+  (let [ch (async/chan)]
+    (try
+      (connections/with-conn conn-pool
+        #(client/fetch % queue))
+      (catch InterruptedException e
+        (do
+          (timbre/debug "Interrupting job fetching" queue)
+          (throw e)))
+      (catch Throwable e (timbre/error e "Error fetching job" queue)))))
+
+(defn try-process
+  [conn-pool {:keys [jobtype jid args]}]
+  (try
+    (if-let [job-fn (get @job-fns jobtype)]
+      (do
+        (timbre/info "Processing job" jobtype jid "with args:" args)
+        (apply job-fn args)
+        (connections/with-conn conn-pool
+          #(client/ack % jid))
+        (timbre/debug "Processed job" jobtype jid "with args:" args))
+      (throw (Exception. (str "Job " jobtype "isn't registered"))))
+    (catch InterruptedException e
+      (do
+        (timbre/debug "Interrupting job processing" jobtype jid)
+        (throw e)))
+    (catch Throwable e
+      (do (timbre/error e "Error processing job" jobtype jid)
+          (connections/with-conn conn-pool
+            #(client/fail % jid e))))))
+
+(defn fetch-and-process
+  [conn-pool]
+  (when-let [job (try-fetch conn-pool default-queue)]
+    (try-process conn-pool job)))
+
+(defn run-worker
+  [conn-pool]
+  (try
+    (loop []
+      (do
+        (fetch-and-process conn-pool)
+        (Thread/sleep 1000)
+        (recur)))))
 
 (defprotocol WorkerManager
   (start [this])
-  (stop [this])
-  )
-
-(defn- process-job
-  [client {:keys [jobtype jid args]}]
-  (try
-      (let [job-fn (get @job-fns jobtype)]
-        (apply job-fn args)
-        (client/ack client jid)
-        )
-      (catch Exception e
-        (do
-          (client/fail client jid e)
-          (throw e)
-          )
-        )
-      )
-  )
-
-(defn fetch-and-process
-  [client]
-  (when-let [job (client/fetch [default-queue])]
-    (process-job client job)
-    )
-  )
-
-(defn run-worker
-  [ch client]
-  (async/thread
-    (loop []
-      (let [[event _] (async/alts! [ch (async/timeout 100)])]
-        (case event
-          :terminate nil
-          (do (fetch-and-process client)
-              (recur))
-          )
-        )
-      )
-    )
-  )
+  (stop [this]))
 
 (defn create-worker-manager
-  ([client] (create-worker-manager client default-pool-size))
-  ([client pool-size]
-   (let [pool (create-worker-pool pool-size)
-         worker-chans (repeat pool-size (async/chan))]
+  ([conn-pool] (create-worker-manager conn-pool default-pool-size))
+  ([conn-pool pool-size]
+   (let [worker-pool (Executors/newFixedThreadPoo pool-size)]
      (reify WorkerManager
        (start [this]
-         (doseq [ch worker-chans]
-           (run-worker ch client)
-           )
-         )
+         (let [workers (doall (for [n (range pool-size)]
+                                #(run-worker conn-pool)))]
+           (timbre/info "Starting" pool-size "workers")
+           (doseq [w workers]
+             (.submit worker-pool w))))
        (stop [this]
-         (doseq [ch worker-chans]
-           (async/>!! ch :terminate)
-           )
-         )
-       )
-     )
-   )
-  )
+         (try
+           (when-not (.awaitTermination worker-pool 1000 TimeUnit/MILLISECONDS)
+             (timbre/info "Shutting down workers")
+             (.shutdownNow worker-pool))
+           (catch Throwable e
+             (timbre/info "Shutting down workers")
+             (.shutdownNow worker-pool))
+           (finally (connections/shutdown conn-pool #(client/close %)))))))))
+
+(defn register-job
+  [name fn]
+  (swap! job-fns assoc (str name) fn))
 
 (defn perform-async
-  ([client fn args]
-   (perform-async fn args {}))
-  ([client fn args {:keys [queue] :as opts}]
-   (let [jobtype (-> fn class str)
-         job {:jid (random/hex 12)
-              :queue (or queue default-queue)
-              :args args
-              :jobtype jobtype}]
-     (swap! job-fns assoc :jobtype fn)
-     (client/push client job)
-     )
-   )
-  )
+  [conn-pool name args {:keys [queue] :as opts}]
+  (when (not (contains? @job-fns (str name)))
+    (throw (Throwable. (str "No such job: " name))))
+  (let [job {:jid (random/hex 12)
+             :queue (or queue default-queue)
+             :args args
+             :jobtype (str name)}]
+    (timbre/info "Pushing job" job)
+    (connections/with-conn conn-pool
+      #(client/push % job))))
 
-;; (def client1 (client/create client/default-uri))
-
-;; (def c (start-heartbeat client1))
-
-;; (async/>!! c "stop")
-
-;; (client/close client1)
-
-;; (defn do-work
-;;   [a]
-;;   (print (str "Doing " a))
-;;   (print "Done")
-;;   )
-
-
-;; (faktory/perform-async do-work 1)
+;; (def pool (connections/create {:size 10} #(client/create client/default-uri)))
+;; (def mngr (create-worker-manager pool))
+;; (start mngr)
+;; (stop mngr)
+;; (defn job1 [a] (prn a " YAHOOOOO"))
+;; (register-job ::job1 job1)
+;; (perform-async pool ::job1 ["It works!!!"] {})
+;; (connections/shutdown pool #(client/close %))
