@@ -50,7 +50,6 @@
   [{:keys [writer]} message]
   (with-timeout
     (do
-      (print message)
       (.append writer message)
       (.flush writer))))
 
@@ -145,10 +144,11 @@
 
 (defn close
   [{:keys [writer reader socket] :as client}]
-  (send-command client "END")
-  (.close writer)
-  (.close reader)
-  (.close socket))
+  (when (not (.isClosed socket))
+    (send-command client "END")
+    (.close writer)
+    (.close reader)
+    (.close socket)))
 
 (defn create
   [uri]

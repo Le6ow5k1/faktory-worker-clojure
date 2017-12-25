@@ -87,7 +87,7 @@
 (defn create-worker-manager
   ([conn-pool] (create-worker-manager conn-pool default-pool-size))
   ([conn-pool pool-size]
-   (let [worker-pool (Executors/newFixedThreadPoo pool-size)]
+   (let [worker-pool (Executors/newFixedThreadPool pool-size)]
      (reify WorkerManager
        (start [this]
          (let [workers (doall (for [n (range pool-size)]
@@ -100,10 +100,12 @@
            (when-not (.awaitTermination worker-pool 1000 TimeUnit/MILLISECONDS)
              (timbre/info "Shutting down workers")
              (.shutdownNow worker-pool))
-           (catch Throwable e
+           (catch InterruptedException e
+             (timbre/debug e)
              (timbre/info "Shutting down workers")
              (.shutdownNow worker-pool))
-           (finally (connections/shutdown conn-pool #(client/close %)))))))))
+           (finally
+             (connections/shutdown conn-pool #(client/close %)))))))))
 
 (defn register-job
   [name fn]

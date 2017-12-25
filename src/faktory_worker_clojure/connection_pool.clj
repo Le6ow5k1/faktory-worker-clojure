@@ -1,6 +1,5 @@
 (ns faktory-worker-clojure.connection-pool
-  (:import [java.util.concurrent LinkedBlockingQueue TimeUnit])
-  )
+  (:import [java.util.concurrent LinkedBlockingQueue TimeUnit]))
 
 (def default-opts {:size 5 :timeout-ms 2500})
 
@@ -8,8 +7,7 @@
   (checkout [this] "Takes connection from a pool")
   (checkin [this conn] "Returns connection to a pool")
   (with-conn [this f] "Calls function f with connection from pool as an argument")
-  (shutdown [this f] "Calls function f with connection as an argument for every connection in pool")
-  )
+  (shutdown [this f] "Calls function f with connection as an argument for every connection in pool"))
 
 (defn create
   [given-opts create-fn]
@@ -36,7 +34,4 @@
       (shutdown [this f]
         (while (not-empty connections)
           (when-let [conn (.poll ^LinkedBlockingQueue connections timeout-ms TimeUnit/MILLISECONDS)]
-            (f conn))))
-      )
-    )
-  )
+            (f conn)))))))
