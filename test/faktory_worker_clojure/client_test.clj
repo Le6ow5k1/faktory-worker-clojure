@@ -1,28 +1,7 @@
 (ns faktory-worker-clojure.client-test
   (:require [faktory-worker-clojure.client :as c]
-            [clojure.test :refer :all]))
-
-(defprotocol ReaderStub
-  (readLine [this])
-  (read [this output offset read-count]))
-
-(defn make-reader-stub
-  [{:keys [read-line-resp read-resp]}]
-  (reify ReaderStub
-    (readLine [this] read-line-resp)
-    (read [this output offset read-count]
-      (let [resp-array (char-array read-resp)]
-        (java.lang.System/arraycopy resp-array offset output offset read-count)))))
-
-(defprotocol WriterStub
-  (append [this msg])
-  (flush [this]))
-
-(defn make-writer-stub
-  [expected-msg]
-  (reify WriterStub
-    (append [this msg] (is (= msg expected-msg)))
-    (flush [this])))
+            [clojure.test :refer :all]
+            [faktory-worker-clojure.test-utils :refer :all]))
 
 (deftest read-and-parse-test
   (testing "Successful response"

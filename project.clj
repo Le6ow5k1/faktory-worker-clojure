@@ -7,5 +7,6 @@
                  [org.clojure/core.async "0.3.443"]
                  [cheshire "5.8.0"]
                  [crypto-random "1.2.0"]
-                 [com.taoensso/timbre "4.10.0"]]
+                 [com.taoensso/timbre "4.10.0"]
+                 [com.gearswithingears/shrubbery "0.4.1"]]
   )

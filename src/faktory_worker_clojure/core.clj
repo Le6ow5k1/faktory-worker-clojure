@@ -1,6 +1,6 @@
 (ns faktory-worker-clojure.core
   (:require [faktory-worker-clojure.client :as client]
-            [faktory-worker-clojure.connection-pool :as connections]
+            [faktory-worker-clojure.connection-pool :refer [with-conn shutdown]]
             [clojure.core.async :as async]
             [crypto.random :as random]
             [taoensso.timbre :as timbre]
@@ -8,15 +8,18 @@
   (:import [java.util.concurrent Executors TimeUnit])
   )
 
-(def heartbeat-period-ms 15000)
-(def default-pool-size 2)
-(def default-queue :default)
+(def defaults
+  {:heartbeat-period-ms 15000
+   :queue :default
+   :concurrency 10
+   :shutdown-timeout-ms 25000})
+
 (def job-fns (atom {}))
 
 (defn try-beat
   [conn-pool]
   (try
-    (connections/with-conn conn-pool
+    (with-conn conn-pool
       #(client/beat %))
     (catch Throwable e
       (timbre/error e "Error during heartbeat"))))
@@ -26,7 +29,7 @@
   (let [c (async/chan)]
     (async/go
       (loop []
-        (let [[stop? _] (async/alts! [c (async/timeout heartbeat-period-ms)])]
+        (let [[stop? _] (async/alts! [c (async/timeout (defaults :heartbeat-period-ms))])]
           (if stop?
             stop?
             (do
@@ -38,7 +41,7 @@
   [conn-pool queue]
   (let [ch (async/chan)]
     (try
-      (connections/with-conn conn-pool
+      (with-conn conn-pool
         #(client/fetch % queue))
       (catch InterruptedException e
         (do
@@ -53,7 +56,7 @@
       (do
         (timbre/info "Processing job" jobtype jid "with args:" args)
         (apply job-fn args)
-        (connections/with-conn conn-pool
+        (with-conn conn-pool
           #(client/ack % jid))
         (timbre/debug "Processed job" jobtype jid "with args:" args))
       (throw (Exception. (str "Job " jobtype "isn't registered"))))
@@ -63,12 +66,12 @@
         (throw e)))
     (catch Throwable e
       (do (timbre/error e "Error processing job" jobtype jid)
-          (connections/with-conn conn-pool
+          (with-conn conn-pool
             #(client/fail % jid e))))))
 
 (defn fetch-and-process
   [conn-pool]
-  (when-let [job (try-fetch conn-pool default-queue)]
+  (when-let [job (try-fetch conn-pool (defaults :queue))]
     (try-process conn-pool job)))
 
 (defn run-worker
@@ -85,7 +88,7 @@
   (stop [this]))
 
 (defn create-worker-manager
-  ([conn-pool] (create-worker-manager conn-pool default-pool-size))
+  ([conn-pool] (create-worker-manager conn-pool (defaults :concurrency)))
   ([conn-pool pool-size]
    (let [worker-pool (Executors/newFixedThreadPool pool-size)]
      (reify WorkerManager
@@ -105,29 +108,38 @@
              (timbre/info "Shutting down workers")
              (.shutdownNow worker-pool))
            (finally
-             (connections/shutdown conn-pool #(client/close %)))))))))
+             (shutdown conn-pool #(client/close %)))))))))
 
 (defn register-job
   [name fn]
   (swap! job-fns assoc (str name) fn))
 
 (defn perform-async
-  [conn-pool name args {:keys [queue] :as opts}]
+  "Pushes job into a queue. Job should be registered.
+
+    (perform-async conn-pool ::sum-numbers-job [2, 3])
+  "
+  [conn-pool name args & {:keys [queue]
+                          :as opts
+                          :or {queue (defaults :queue)}}]
   (when (not (contains? @job-fns (str name)))
-    (throw (Throwable. (str "No such job: " name))))
+    (let [msg (str "Job "
+                   name
+                   " not found in registry. You need to register the job using register-job function.")]
+      (throw (Exception. msg))))
   (let [job {:jid (random/hex 12)
-             :queue (or queue default-queue)
+             :queue queue
              :args args
              :jobtype (str name)}]
     (timbre/info "Pushing job" job)
-    (connections/with-conn conn-pool
+    (with-conn conn-pool
       #(client/push % job))))
 
-;; (def pool (connections/create {:size 10} #(client/create client/default-uri)))
+;; (def pool (conn-pool/create {:size 10} #(client/create)))
 ;; (def mngr (create-worker-manager pool))
 ;; (start mngr)
 ;; (stop mngr)
 ;; (defn job1 [a] (prn a " YAHOOOOO"))
 ;; (register-job ::job1 job1)
 ;; (perform-async pool ::job1 ["It works!!!"] {})
-;; (connections/shutdown pool #(client/close %))
+;; (shutdown pool #(client/close %))
