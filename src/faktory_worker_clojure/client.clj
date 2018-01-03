@@ -5,20 +5,14 @@
             [clojure.java.io :as io]
             [cheshire.core :as json]
             [crypto.random :as random]
-            )
+            [taoensso.timbre :as timbre])
   (:import java.io.StringWriter
-           [java.net Socket URI]))
+           [java.net Socket URI]
+           [javax.net.ssl SSLSocketFactory]
+           [java.security MessageDigest]))
 
 (def default-uri "tcp://localhost:7419")
 (def default-timeout-ms 2500)
-
-(defn create-socket
-  [given-uri]
-  (let [uri (new URI given-uri)
-        host (.getHost uri)
-        port (.getPort uri)]
-    (doto (Socket. host port)
-      (.setSoTimeout default-timeout-ms))))
 
 (defn worker-info
   []
@@ -30,7 +24,7 @@
              (re-find #"\d+")
              Integer/parseInt)
    :labels [(str "clojure-" (clojure-version))]
-   :v 1
+   :v 2
    }
   )
 
@@ -133,14 +127,40 @@
       response
       (throw (command-error response)))))
 
+(defn hash-password
+  [iterations password salt]
+  (let [digest (MessageDigest/getInstance "SHA-256")]
+    (doall
+     (loop [i iterations
+            hash (.getBytes (str password salt))]
+       (if (= i 0)
+         (.toString (BigInteger. 1 hash) 16)
+         (recur (dec i) (.digest digest hash)))))))
+
 (defn open
-  [{:keys [writer reader] :as client} info]
-  (read client)
-  (send-command client "HELLO" info)
-  (let [response (read-and-parse client)]
-    (if (= response "OK")
-      response
-      (throw (command-error response)))))
+  [{:keys [writer reader uri] :as client} info]
+  (let [[_ password-info] (re-find #"HI (.*)" (read client))]
+    (if password-info
+      (let [{version :v salt :s iterations :i :or {:i 1}} (json/parse-string password-info true)]
+        (when (> version 2)
+          (timbre/warn (str "Warning: Faktory server protocol "
+                            version
+                            " in use, this worker doesn't speak that version.")))
+        (when (< iterations 1)
+          (throw (Exception. "Invalid hashing")))
+        (if salt
+          (let [user-info (.getUserInfo uri)
+                [_ password] (str/split user-info #":")]
+            (if password
+              (let [hashed-password (hash-password iterations password salt)]
+                (send-command client "HELLO" (assoc info :pwdhash hashed-password)))
+              (throw (Exception. "Server requires password, but none has been configured"))))
+          (send-command client "HELLO" info)))
+      (send-command client "HELLO" info))
+    (let [response (read-and-parse client)]
+      (if (= response "OK")
+        response
+        (throw (command-error response))))))
 
 (defn close
   [{:keys [writer reader socket] :as client}]
@@ -150,12 +170,30 @@
     (.close reader)
     (.close socket)))
 
-(defn create
+(defn create-ssl-socket
+  [host port]
+  (let [factory (SSLSocketFactory/getDefault)]
+    (doto (.createSocket factory host port))))
+
+(defn create-socket
   [uri]
-  (let [socket (create-socket uri)
-        writer (io/writer socket)
-        reader (io/reader socket)
-        info (worker-info)
-        client {:writer writer :reader reader :socket socket :wid (info :wid)}]
-    (open client info)
-    client))
+  (let [host (.getHost uri)
+        port (.getPort uri)
+        tls? (str/includes? (.getScheme uri) "tls")
+        socket (if tls?
+                 (create-ssl-socket host port)
+                 (Socket. host port))]
+    (doto socket
+      (.setSoTimeout default-timeout-ms))))
+
+(defn create
+  ([] (create default-uri))
+  ([given-uri]
+   (let [uri (new URI given-uri)
+         socket (create-socket uri)
+         writer (io/writer socket)
+         reader (io/reader socket)
+         info (worker-info)
+         client {:writer writer :reader reader :socket socket :wid (info :wid) :uri uri}]
+     (open client info)
+     client)))
